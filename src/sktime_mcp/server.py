@@ -478,7 +478,6 @@ async def list_tools() -> list[Tool]:
                         "default": True,
                     },
                 },
-                "required": ["enabled"],
             },
         ),
         Tool(
