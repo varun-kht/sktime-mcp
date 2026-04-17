@@ -222,9 +222,10 @@ class Executor:
     async def fit_predict_async(
         self,
         handle_id: str,
-        dataset: str,
+        dataset: str = "",
         horizon: int = 12,
         job_id: Optional[str] = None,
+        data_handle: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Async version of fit_predict with job tracking.
@@ -234,9 +235,10 @@ class Executor:
 
         Args:
             handle_id: Estimator handle
-            dataset: Dataset name
+            dataset: Dataset name (demo)
             horizon: Forecast horizon
             job_id: Optional job ID for tracking (created if not provided)
+            data_handle: Optional data handle from load_data_source
 
         Returns:
             Dictionary with success status and job_id
@@ -249,13 +251,15 @@ class Executor:
             logger.warning(f"Could not get estimator name: {e}")
             estimator_name = "Unknown"
 
+        data_source_name = data_handle if data_handle else dataset
+
         # Create job if not provided
         if job_id is None:
             job_id = self._job_manager.create_job(
                 job_type="fit_predict",
                 estimator_handle=handle_id,
                 estimator_name=estimator_name,
-                dataset_name=dataset,
+                dataset_name=data_source_name,
                 horizon=horizon,
                 total_steps=3,  # load data, fit, predict
             )
@@ -264,28 +268,43 @@ class Executor:
             # Update status to RUNNING
             self._job_manager.update_job(job_id, status=JobStatus.RUNNING)
 
-            # Step 1: Load dataset
-            self._job_manager.update_job(
-                job_id, completed_steps=0, current_step=f"Loading dataset '{dataset}'..."
-            )
-            await asyncio.sleep(0.01)  # Yield control to event loop
-
-            data_result = self.load_dataset(dataset)
-            if not data_result["success"]:
+            # Step 1: Get data
+            if data_handle:
                 self._job_manager.update_job(
-                    job_id,
-                    status=JobStatus.FAILED,
-                    errors=[f"Failed to load dataset: {data_result.get('error')}"],
+                    job_id, completed_steps=0, current_step=f"Retrieving data handle '{data_handle}'..."
                 )
-                return data_result
+                if data_handle not in self._data_handles:
+                    err = f"Unknown data handle: {data_handle}"
+                    self._job_manager.update_job(
+                        job_id, status=JobStatus.FAILED, errors=[err]
+                    )
+                    return {"success": False, "error": err}
+                
+                data_info = self._data_handles[data_handle]
+                y = data_info["y"]
+                X = data_info.get("X")
+            else:
+                self._job_manager.update_job(
+                    job_id, completed_steps=0, current_step=f"Loading demo dataset '{dataset}'..."
+                )
+                await asyncio.sleep(0.01)  # Yield control to event loop
 
-            y = data_result["data"]
-            X = data_result.get("exog")
+                data_result = self.load_dataset(dataset)
+                if not data_result["success"]:
+                    self._job_manager.update_job(
+                        job_id,
+                        status=JobStatus.FAILED,
+                        errors=[f"Failed to load dataset: {data_result.get('error')}"],
+                    )
+                    return data_result
+                y = data_result["data"]
+                X = data_result.get("exog")
+
             fh = list(range(1, horizon + 1))
 
             # Step 2: Fit model
             self._job_manager.update_job(
-                job_id, completed_steps=1, current_step=f"Fitting {estimator_name} on {dataset}..."
+                job_id, completed_steps=1, current_step=f"Fitting {estimator_name} on {data_source_name}..."
             )
             await asyncio.sleep(0.01)  # Yield control
 
